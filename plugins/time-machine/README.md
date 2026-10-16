@@ -67,7 +67,7 @@ Claude Code already rewinds the edits its file tools made (`Esc Esc`, `/rewind`)
 
 - It needs a git repository; elsewhere `/timeline` says so and nothing is snapshotted.
 - A snapshot stores every file that is not ignored, untracked ones included. A large untracked file that is not in `.gitignore` grows `.git` until its snapshot is dropped.
-- A jump waits for the turn to end: while Claude is changing files, a jump refuses.
+- A jump waits for the turn to end, and for any tool still writing (a background agent's included): until then it refuses. It also refuses when the files it would write include an ignored one on disk, or more than can all be checked.
 - A turn whose tools leave the files as they were (a test run that writes nothing) adds no state.
 - A Bash command that only looks (`ls`, `cat`, `grep`, `rg`, `git status`, `git log`, … chained with `|`, `&&` or `;`) takes no snapshot. Any redirection, `$(…)`, `tee`, `xargs`, `find -delete` or `-exec`, or a command it does not know, does: when unsure, it snapshots.
 

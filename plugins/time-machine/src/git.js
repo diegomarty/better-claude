@@ -24,15 +24,20 @@ const IDENTITY = {
   GIT_COMMITTER_EMAIL: 'time-machine@localhost'
 }
 const TIMEOUT_MS = 120_000
+// Paths handed to one git call as arguments, well under any system's argument limit
+const PATHS_PER_CALL = 500
 // The HEAD each index was last seeded from: while HEAD stays, the index already holds it, and
 // seeding again would only make git hash the changed files again
 const seededFrom = new Map()
 
-/** A move that would write over ignored files, which no snapshot holds: `paths` are they. */
+/**
+ * A move refused before it touched a file: it would write over ignored files no snapshot holds
+ * (`paths`), or it changes more files than can all be checked (`paths` empty).
+ */
 export class MoveBlocked extends Error {
-  /** @param {string[]} paths */
-  constructor (paths) {
-    super(`it would write over ignored files: ${paths.join(', ')}`)
+  /** @param {string[]} paths @param {string} [why] */
+  constructor (paths, why) {
+    super(why ?? `it would write over ignored files no snapshot holds (${paths.join(', ')})`)
     this.name = 'MoveBlocked'
     this.paths = paths
   }
@@ -139,6 +144,17 @@ async function whole (run, repo, argv) {
   return result.stdout.slice(0, result.stdout.lastIndexOf('\0') + 1)
 }
 
+/**
+ * A git `-z` listing, every entry: one cut at the engine's 4 MiB of output would hide the
+ * entries past the cut, so it refuses the move instead (MoveBlocked, with no paths).
+ */
+async function every (run, repo, argv, { stdin, okCodes = [0] } = {}) {
+  const result = await run(['git', ...argv], { cwd: repo.top, timeoutMs: TIMEOUT_MS, ...(stdin === undefined ? {} : { stdin }) })
+  if (!okCodes.includes(result.exitCode)) throw new Error(`git ${argv[0]}: ${(result.stderr || '').trim().split('\n')[0] || `exit ${result.exitCode}`}`)
+  if (result.isStdoutTruncated) throw new MoveBlocked([], 'it changes more files than can all be checked for ignored ones')
+  return result.stdout.split('\0').filter(Boolean)
+}
+
 /** What changed from tree `a` to tree `b`: `[{ path, status, added, removed }]`. */
 export async function changes (run, repo, a, b) {
   if (a === b) return []
@@ -148,7 +164,12 @@ export async function changes (run, repo, a, b) {
   const parts = status.split('\0').filter(Boolean)
   for (let i = 0; i + 1 < parts.length; i += 2) statusOf.set(parts[i + 1], parts[i])
   return numstat.split('\0').filter(Boolean).map(line => {
-    const [added, removed, path] = line.split('\t')
+    // `added<TAB>removed<TAB>path`: a path may hold tabs of its own, so only the first two split
+    const first = line.indexOf('\t')
+    const second = line.indexOf('\t', first + 1)
+    const added = line.slice(0, first)
+    const removed = line.slice(first + 1, second)
+    const path = line.slice(second + 1)
     return {
       path,
       status: statusOf.get(path) ?? 'M',
@@ -166,18 +187,20 @@ export async function changes (run, repo, a, b) {
  */
 export async function move (run, repo, from, to) {
   if (from === to) return []
-  const moved = await changes(run, repo, from, to)
-  // Only a file the target adds can land on an ignored one (everything else is in `from`)
-  const added = moved.filter(file => file.status === 'A').map(file => file.path)
+  // Only a file the target adds can land on an ignored one (everything else is in `from`).
+  // The check needs every one of them: its own listing, never the summary `changes` may cut
+  const added = await every(run, repo, ['diff', '--name-only', '--diff-filter=A', '--no-renames', '-z', from, to])
   if (added.length > 0) {
     // Which of them the .gitignore matches, in one process (exit 1: none does)…
-    const checked = await run(['git', 'check-ignore', '-z', '--stdin'], { cwd: repo.top, stdin: added.join('\0') + '\0', timeoutMs: TIMEOUT_MS })
-    if (checked.exitCode > 1) throw new Error(`git check-ignore: ${checked.stderr.trim().split('\n')[0]}`)
-    const ignored = checked.stdout.split('\0').filter(Boolean)
+    const ignored = await every(run, repo, ['check-ignore', '-z', '--stdin'], { stdin: added.join('\0') + '\0', okCodes: [0, 1] })
     // …and of those, which are on disk: the ones the move would write over
-    const blocked = ignored.length === 0 ? [] : (await git(run, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', ...ignored.map(path => `:(literal)${path}`)], { cwd: repo.top })).split('\0').filter(Boolean)
+    const blocked = []
+    for (let i = 0; i < ignored.length; i += PATHS_PER_CALL) {
+      blocked.push(...await every(run, repo, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', ...ignored.slice(i, i + PATHS_PER_CALL).map(path => `:(literal)${path}`)]))
+    }
     if (blocked.length > 0) throw new MoveBlocked(blocked)
   }
+  const moved = await changes(run, repo, from, to)
   await git(run, ['read-tree', '-m', '-u', from, to], { cwd: repo.top, env: indexEnv(repo) })
   return moved
 }

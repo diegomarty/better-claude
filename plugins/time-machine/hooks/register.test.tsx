@@ -83,6 +83,9 @@ function world (on: On, { inRepo = true } = {}) {
     if (verb === 'config') return ok(`${disk.user}\n`)
     if (verb === 'write-tree') return ok(`${disk.tree}\n`)
     if (verb === 'commit-tree') return ok(`c${++disk.commits}\n`)
+    if (verb === 'diff' && rest.includes('--name-only')) {
+      return ok(disk.diff.filter(([status]) => status === 'A').map(([, path]) => `${path}\0`).join(''))
+    }
     if (verb === 'diff') {
       return ok(rest.includes('--numstat')
         ? disk.diff.map(([, path, add, del]) => `${add}\t${del}\t${path}\0`).join('')
@@ -699,4 +702,33 @@ test('the indexes of sessions that crashed go; this session\'s own and the recen
   expect(w.other.filter(argv => argv[0] === 'rm').map(argv => argv[2]).sort()).toEqual([
     '/repo/.git/time-machine-crashed.index', '/repo/.git/time-machine.index'
   ])
+})
+
+// What Codex's review of the PR found
+
+test('no jump while a background agent\'s tool is still writing files', async ($, on) => {
+  const w = world(on)
+  await startSession($)
+  await turnOf($, 'first')
+  // The main turn is over; an agent left running calls a tool that takes a while
+  const release = hold(w)
+  const writing = $.tool.call({ tool: 'Bash', tool_use_id: 'bg', command: 'npm run build' })
+  await w.clock.settle()
+  expect((await timeline($, '1')).text).toContain('a tool is still changing files')
+  release()
+  await writing
+  expect((await timeline($, '1')).text).toContain('At #1')
+})
+
+test('a jump made before a restart still reaches Claude with the next prompt', async ($, on) => {
+  world(on)
+  await startSession($)
+  await turnOf($, 'first')
+  await turnOf($, 'second')
+  await timeline($, '1')
+  // Exit and resume (or a hot reload): the module starts over, the session's record stays
+  await startSession($)
+  const note = (await prompt($)).context?.[0] ?? ''
+  expect(note).toContain('M src/a.ts')
+  expect((await prompt($, 'and now?')).context ?? []).toEqual([])
 })

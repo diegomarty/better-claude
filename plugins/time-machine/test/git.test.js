@@ -290,3 +290,42 @@ test('a listing cut at the engine\'s output limit keeps its whole entries only',
   assert.equal(listed.length, 2)
   assert.ok(listed.every(entry => ['one.txt', 'three.txt', 'two.txt'].includes(entry.path)))
 })
+
+test('a path with a tab in its name keeps it, and the ignored-file check sees it', { skip: process.platform === 'win32' && 'no tabs in Windows file names' }, async t => {
+  const { dir, file, sh } = await repository(t)
+  const repo = await locate(run, dir)
+  await writeFile(file('a\tb.txt'), 'old\n')
+  const before = await snapshot(run, repo, `${REF_ROOT}/s/1`, 'a')
+  await rm(file('a\tb.txt'))
+  await writeFile(file('.gitignore'), 'secret.env\na?b.txt\n')
+  await sh('commit', '-qam', 'ignore it')
+  const after = await snapshot(run, repo, `${REF_ROOT}/s/2`, 'b')
+  const listed = await changes(run, repo, after.tree, before.tree)
+  assert.deepEqual(listed.find(entry => entry.path.startsWith('a')), { path: 'a\tb.txt', status: 'A', added: 1, removed: 0 })
+
+  await writeFile(file('a\tb.txt'), 'precious\n')
+  const now = await treeOf(run, repo)
+  await assert.rejects(move(run, repo, now.tree, before.tree), error => error instanceof MoveBlocked && error.paths.includes('a\tb.txt'))
+  assert.equal(await readFile(file('a\tb.txt'), 'utf8'), 'precious\n')
+})
+
+test('a move whose list of added files comes back cut refuses, and touches nothing', async t => {
+  const { dir, file } = await repository(t)
+  const repo = await locate(run, dir)
+  const before = await snapshot(run, repo, `${REF_ROOT}/s/1`, 'a')
+  await writeFile(file('a.txt'), 'two\n')
+  await writeFile(file('new.txt'), 'new\n')
+  const after = await snapshot(run, repo, `${REF_ROOT}/s/2`, 'b')
+  await rm(file('new.txt'))
+  await writeFile(file('a.txt'), 'one\n')
+  // Past 4 MiB the engine cuts the output: here, the listing the check is built from
+  const cut = async (argv, init) => {
+    const result = await run(argv, init)
+    return argv.includes('--diff-filter=A') ? { ...result, isStdoutTruncated: true } : result
+  }
+  const now = await treeOf(cut, repo)
+  await assert.rejects(move(cut, repo, now.tree, after.tree), error => error instanceof MoveBlocked && error.paths.length === 0)
+  assert.equal(await readFile(file('a.txt'), 'utf8'), 'one\n')
+  assert.equal(await exists(file('new.txt')), false)
+  assert.ok(before.tree)
+})

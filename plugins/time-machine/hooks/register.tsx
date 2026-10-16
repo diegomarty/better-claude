@@ -74,8 +74,12 @@ let liveQueued = false
 // Whose DeLorean it is: the first name in git's user.name, empty when git has none
 let driver = ''
 // The tree Claude last left the files in, and whether a jump has moved them since
+// Both are kept with the session's states, so a jump made before a restart still reaches Claude
 let modelTree: string | null = null
 let jumped = false
+// Tool calls that may write and are still running, a background agent's included: no jump
+// moves the files under one
+let writing = 0
 // Every git step goes one after another: a turn's start, its end and a jump never interleave
 let chain: Promise<unknown> = Promise.resolve()
 const exclusive = <T,>(work: () => Promise<T>): Promise<T> => {
@@ -87,10 +91,17 @@ const exclusive = <T,>(work: () => Promise<T>): Promise<T> => {
 const runner = ($: Engine) => (argv: readonly string[], init?: object) => $.process.run(argv, init)
 const refOf = (id: number) => `${REF_ROOT}/${sessionId}/${id}`
 
+type Saved = { states?: State[]; cursor?: number | null; modelTree?: string | null; jumped?: boolean }
+
 async function save ($: Engine, states: State[], cursor: number | null) {
   await update($, STATES, () => states)
   await update($, CURSOR, () => cursor)
-  await $.store.set(`session:${sessionId}`, { at: await $.clock.now(), states, cursor })
+  await $.store.set(`session:${sessionId}`, { at: await $.clock.now(), states, cursor, modelTree, jumped })
+}
+
+/** Saves what Claude last saw and whether a jump moved it since, with the states as they are. */
+async function remember ($: Engine) {
+  await save($, await read($, STATES), await read($, CURSOR))
 }
 
 /** The state the cursor is on, if any. */
@@ -123,7 +134,7 @@ async function addState ($: Engine, now: { tree: string; head: string | null }, 
  * The states of this session on (re)start: the live ones, which a hot reload keeps, merged
  * with the saved ones (see merge), the refs of any state given a new id pointed again.
  */
-async function loadStates ($: Engine, saved: { states?: State[]; cursor?: number | null } | undefined) {
+async function loadStates ($: Engine, saved: Saved | undefined) {
   const isLive = await read($, SESSION) === sessionId
   const merged = merge(Array.isArray(saved?.states) ? saved.states : [], isLive ? await read($, STATES) : [])
   // A state older than the snapshots kept has lost its commit to prune: it goes, and a state
@@ -186,7 +197,10 @@ async function finishTurn ($: Engine) {
   const now = await treeOf(runner($), repo)
   modelTree = now.tree
   jumped = false
-  if (!ended?.start || now.tree === ended.start.tree) return
+  if (!ended?.start || now.tree === ended.start.tree) {
+    await remember($)
+    return
+  }
   const { start } = ended
   const here = await current($)
   // The files moved since the cursor without Claude, or this is the first turn
@@ -217,6 +231,8 @@ async function goTo ($: Engine, id: number, read0?: { tree: string; head: string
   if (!repo) return 'Time Machine: this folder is not a git repository.'
   // Mid-turn, Claude works on files it has read: moving them under it would go unnoticed
   if (turn && !turn.outside) return 'Time Machine: a turn is running. Jump when it ends.'
+  // A background agent's tool may be writing right now: the files would move under it
+  if (writing > 0) return 'Time Machine: a tool is still changing files. Jump when it ends.'
   const target = (await read($, STATES)).find(state => state.id === id)
   if (!target) return `Time Machine: there is no #${id}. /${COMMAND} lists them.`
 
@@ -243,11 +259,12 @@ async function goTo ($: Engine, id: number, read0?: { tree: string; head: string
     moved = await move(runner($), repo, now.tree, target.tree)
   } catch (error) {
     if (!(error instanceof MoveBlocked)) throw error
-    return `Time Machine: going to #${id} would write over ignored files no snapshot holds (${error.paths.join(', ')}). Move them away first.`
+    return `Time Machine: not going to #${id}: ${error.message}.${error.paths.length > 0 ? ' Move them away first.' : ''}`
   }
   await save($, await read($, STATES), target.id)
   await update($, DIRTY, () => false)
   jumped = true
+  await remember($)
   await previewChosen($)
   const text = `⚡ 88 mph · At #${id} · ${target.label} (${summary(moved)} changed).${kept}`
   await update($, NOTE, () => text)
@@ -365,6 +382,7 @@ async function jumpNote ($: Engine, from: string) {
   const now = await treeOf(runner($), repo!)
   jumped = false
   modelTree = now.tree
+  await remember($)
   const files = await changes(runner($), repo!, from, now.tree)
   if (files.length === 0) return null
   const named = files.slice(0, NOTE_FILES).map((file: Change) => `${file.status} ${file.path}`).join(', ')
@@ -383,8 +401,11 @@ export const register: Register = (on, options) => {
     })
     sessionId = await $.session.id()
     turn = null
-    jumped = false
-    modelTree = null
+    writing = 0
+    const saved = await $.store.get(`session:${sessionId}`) as Saved | undefined
+    // A resumed or reloaded session picks up a jump Claude has not heard of yet
+    modelTree = typeof saved?.modelTree === 'string' ? saved.modelTree : null
+    jumped = saved?.jumped === true
     const found = await locate(runner($), await $.session.cwd())
     // An index of its own per session: two sessions in one repository never share a lock
     repo = found && { ...found, index: `${found.gitDir}/time-machine-${sessionId}.index` }
@@ -392,7 +413,7 @@ export const register: Register = (on, options) => {
       const name = await $.process.run(['git', 'config', 'user.name'], { cwd: repo.top })
       driver = name.stdout.trim().split(/\s+/)[0] ?? ''
     }
-    await loadStates($, await $.store.get(`session:${sessionId}`) as { states?: State[]; cursor?: number | null } | undefined)
+    await loadStates($, saved)
     await update($, DIRTY, () => false)
     await update($, DEPARTED, () => null)
     await update($, NOTE, () => null)
@@ -441,7 +462,13 @@ export const register: Register = (on, options) => {
     if (mutates && !turn?.start) await exclusive(() => startTurn($))
     // The running row says what Claude is at while the tool runs, and that it thinks after
     await update($, LIVE, live => live ? { ...live, doing: activity(e.tool, e as unknown as Record<string, unknown>) } : live)
-    const result = await next(e)
+    if (mutates) writing++
+    let result
+    try {
+      result = await next(e)
+    } finally {
+      if (mutates) writing--
+    }
     await update($, LIVE, live => live ? { ...live, doing: activity(null) } : live)
     if (mutates && turn?.start && !liveQueued) {
       liveQueued = true
