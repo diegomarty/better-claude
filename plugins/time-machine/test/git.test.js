@@ -15,14 +15,21 @@ import { MoveBlocked, REF_ROOT, changes, keep, locate, move, pin, prune, snapsho
  */
 function run (argv, init = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd: init.cwd, env: { ...process.env, ...init.env } })
+    // Without stdin to send, the child starts with its input closed: writing to a child that has
+    // already exited is an EPIPE, and on a fast runner git often exits first
+    const hasStdin = init.stdin !== undefined
+    const child = spawn(argv[0], argv.slice(1), { cwd: init.cwd, env: { ...process.env, ...init.env }, stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr += chunk })
     child.on('error', reject)
     child.on('close', code => resolve({ exitCode: code ?? 1, stdout, stderr }))
-    child.stdin.end(init.stdin ?? '')
+    if (hasStdin) {
+      // A child may exit before it reads all of it (check-ignore with nothing ignored): not a failure
+      child.stdin.on('error', () => {})
+      child.stdin.end(init.stdin)
+    }
   })
 }
 
