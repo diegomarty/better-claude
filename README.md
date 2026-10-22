@@ -15,6 +15,7 @@ Plugins and mods for Claude Code by midudev, one per folder in [`plugins/`](plug
 | **After** | A prompt queue: `/after <task>` runs it when Claude finishes, without steering it. | [`plugins/after/`](plugins/after/README.md) |
 | **Use Haiku** | Start a prompt with `_` and that turn runs on Haiku. | [`plugins/use-haiku/`](plugins/use-haiku/README.md) |
 | **Think Hard** | Start a prompt with `+` and that turn thinks at max effort. | [`plugins/think-hard/`](plugins/think-hard/README.md) |
+| **Inline Images** | Pictures in the transcript, as the desktop app shows them: what Claude reads, what you paste, what it links; GIFs play. | [`plugins/inline-images/`](plugins/inline-images/README.md) |
 | **Token Meter** | Each turn's tokens and the session total, in color under the prompt. | [`plugins/token-meter/`](plugins/token-meter/README.md) |
 -->
 
@@ -33,6 +34,7 @@ Plugins and mods for Claude Code by midudev, one per folder in [`plugins/`](plug
 /plugin install use-haiku@better-claude
 /plugin install think-hard@better-claude
 /plugin install token-meter@better-claude
+/plugin install inline-images@better-claude
 -->
 
 To get new versions on their own, turn on auto-update: `/plugin` → **Marketplaces** → **better-claude** → **Enable auto-update**. Claude Code leaves it off for marketplaces outside Anthropic's.

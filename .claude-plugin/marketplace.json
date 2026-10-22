@@ -51,6 +51,13 @@
       "category": "productivity"
     },
     {
+      "name": "inline-images",
+      "source": "./plugins/inline-images",
+      "description": "See pictures in the transcript, as the desktop app shows them: the images Claude reads, the ones you paste and those its answers link to; GIFs play.",
+      "version": "0.1.0",
+      "category": "productivity"
+    },
+    {
       "name": "commit",
       "source": "./plugins/commit",
       "description": "/commit asks commit + push, commit only or a new branch, then splits your changes into Conventional Commits on Haiku 5.5.",
