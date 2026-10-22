@@ -1,0 +1,42 @@
+{
+  "name": "inline-images",
+  "version": "0.1.0",
+  "description": "See pictures in the transcript, as the desktop app shows them: the images Claude reads, the ones you paste and those its answers link to; GIFs play.",
+  "author": {
+    "name": "Miguel Ángel Durán (midudev)",
+    "url": "https://github.com/midudev"
+  },
+  "homepage": "https://github.com/midudev/better-claude",
+  "repository": "https://github.com/midudev/better-claude",
+  "license": "MIT",
+  "keywords": [
+    "images",
+    "gif",
+    "inline",
+    "transcript",
+    "mod"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "rows": {
+      "type": "number",
+      "title": "Picture height",
+      "description": "The most terminal rows a picture takes in the transcript.",
+      "default": 12,
+      "min": 3,
+      "max": 60
+    },
+    "animate": {
+      "type": "boolean",
+      "title": "Play GIFs",
+      "description": "Play animated GIFs while they show on screen. Off, the first frame shows.",
+      "default": true
+    },
+    "markdown": {
+      "type": "boolean",
+      "title": "Pictures in answers",
+      "description": "Show the local pictures an answer embeds with markdown (![alt](path)) under it, and a chip for each one it only names (a path, or a file name found under the working folder): the pointer on a chip shows the picture.",
+      "default": true
+    }
+  }
+}
